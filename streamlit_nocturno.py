@@ -130,9 +130,10 @@ if page == "EDA":
         int(df["year"].max()),
     )
 
-    map_data = total_net[total_net["year"] == year_map].copy()
+    map_data = net_df[net_df["year"] == year_map].copy()
     map_data = add_lat_lon(map_data)
     map_data["bubble_size"] = map_data["net_migration"].abs() + 200
+
 
     st.subheader("Net migration map")
     st.write(
