@@ -32,14 +32,7 @@ VARIABLE_NAMES = {
     "house_price": "House price index",
     "crime": "Crime offences",
     "net_migration": "Net migration",
-    "year": "Year",
-    "is_male": "Sex: male",
-}
-
-SEX_LABELS = {
-    "All": "All people",
-    "female": "Women",
-    "male": "Men",
+    "year": "Year"
 }
 
 # Region coordinates. These are approximate central points for a clear visual map.
@@ -87,24 +80,14 @@ def readable_number(value):
 df = load_data()
 
 # Net migration by year, region and sex.
-inflows = df.groupby(["year", "destination_region_name", "sex"], as_index=False)["migration_flow"].sum()
+inflows = df.groupby(["year", "destination_region_name"], as_index=False)["migration_flow"].sum()
 inflows.rename(columns={"destination_region_name": "region", "migration_flow": "inflow"}, inplace=True)
 
-outflows = df.groupby(["year", "origin_region_name", "sex"], as_index=False)["migration_flow"].sum()
+outflows = df.groupby(["year", "origin_region_name"], as_index=False)["migration_flow"].sum()
 outflows.rename(columns={"origin_region_name": "region", "migration_flow": "outflow"}, inplace=True)
 
-net_by_sex = pd.merge(inflows, outflows, on=["year", "region", "sex"])
-net_by_sex["net_migration"] = net_by_sex["inflow"] - net_by_sex["outflow"]
-
-# Net migration for all people combined.
-total_net = net_by_sex.groupby(["year", "region"], as_index=False)["net_migration"].sum()
-total_net["sex"] = "All"
-
-# One table that works for All, female and male filters.
-net_all_options = pd.concat(
-    [total_net[["year", "region", "sex", "net_migration"]], net_by_sex[["year", "region", "sex", "net_migration"]]],
-    ignore_index=True,
-)
+net_df = pd.merge(inflows, outflows, on=["year", "region"])
+net_df["net_migration"] = net_df["inflow"] - net_df["outflow"]
 
 # Economic profile: one row per region and year.
 features_list = []
@@ -119,15 +102,7 @@ for (year, region), group in df.groupby(["year", "origin_region_name"]):
     })
 
 feat_df = pd.DataFrame(features_list)
-feat_df = pd.merge(feat_df, total_net[["year", "region", "net_migration"]], on=["year", "region"])
-
-# Same regional profile, but with net migration split by sex.
-sex_feat_df = pd.merge(
-    feat_df.drop(columns="net_migration"),
-    net_by_sex[["year", "region", "sex", "net_migration"]],
-    on=["year", "region"],
-)
-sex_feat_df["is_male"] = np.where(sex_feat_df["sex"] == "male", 1, 0)
+feat_df = pd.merge(feat_df, net_df[["year", "region", "net_migration"]], on=["year", "region"])
 
 # --------------------------------------------------
 # Sidebar menu
@@ -206,35 +181,12 @@ if page == "EDA":
         st.plotly_chart(fig_line, use_container_width=True)
 
     with col2:
-        st.subheader("Sex comparison")
-        st.write(
-            "This compares net migration for women and men. The larger the gap, the more differences in migration between each sex."
-        )
-        sex_year = net_by_sex[net_by_sex["year"] == year_map].copy()
-        sex_pivot = sex_year.pivot(index="region", columns="sex", values="net_migration").reset_index()
-        sex_pivot["sex_gap"] = sex_pivot["female"] - sex_pivot["male"]
-        sex_pivot = sex_pivot.sort_values("sex_gap")
-
-        fig_sex = go.Figure()
-        fig_sex.add_trace(go.Bar(x=sex_pivot["region"], y=sex_pivot["female"], name="Women"))
-        fig_sex.add_trace(go.Bar(x=sex_pivot["region"], y=sex_pivot["male"], name="Men"))
-        fig_sex.add_hline(y=0, line_dash="dash", line_color="gray")
-        fig_sex.update_layout(
-            barmode="group",
-            height=410,
-            xaxis_tickangle=-35,
-            yaxis_title="Net migration",
-            xaxis_title="",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        )
-        st.plotly_chart(fig_sex, use_container_width=True)
-
-    st.subheader("Correlation heatmap")
-    corr = feat_df[["net_migration", "salary", "unemployment", "house_price", "crime"]].corr().round(2)
-    corr.rename(index=VARIABLE_NAMES, columns=VARIABLE_NAMES, inplace=True)
-    fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
-    fig_corr.update_layout(height=460)
-    st.plotly_chart(fig_corr, use_container_width=True)
+        st.subheader("Correlation heatmap")
+        corr = feat_df[["net_migration", "salary", "unemployment", "house_price", "crime"]].corr().round(2)
+        corr.rename(index=VARIABLE_NAMES, columns=VARIABLE_NAMES, inplace=True)
+        fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+        fig_corr.update_layout(height=460)
+        st.plotly_chart(fig_corr, use_container_width=True)
 
 # --------------------------------------------------
 # PAGE 2: CLUSTERING
@@ -365,9 +317,9 @@ elif page == "Machine Learning":
         "The aim is not only to predict, but to see which variables are most linked to migration."
     )
 
-    ml_data = sex_feat_df.copy()
+    ml_data = feat_df.copy()
 
-    ml_features = ["year", "salary", "unemployment", "house_price", "crime", "is_male"]
+    ml_features = ["year", "salary", "unemployment", "house_price", "crime"]
 
     X = ml_data[ml_features]
     y = ml_data["net_migration"]
@@ -407,22 +359,12 @@ elif page == "Machine Learning":
         value=int(ml_data["year"].max()),
     )
 
-    sex_view = st.radio(
-        "Show chart for",
-        ["female", "male"],
-        format_func=lambda x: SEX_LABELS[x],
-        horizontal=True,
-    )
-
     st.subheader("Actual vs predicted")
     st.write(
         "Bars show the real net migration. Diamonds show the model prediction. "
     )
 
-    pred_year_df = ml_data[
-        (ml_data["year"] == pred_year) &
-        (ml_data["sex"] == sex_view)
-    ].sort_values("net_migration")
+    pred_year_df = ml_data[ml_data["year"] == pred_year].sort_values("net_migration")
 
     fig_pred = go.Figure()
     fig_pred.add_trace(go.Bar(
@@ -442,7 +384,7 @@ elif page == "Machine Learning":
     fig_pred.update_layout(
         height=430,
         xaxis_tickangle=-35,
-        title=f"Actual vs predicted net migration in {pred_year} - {SEX_LABELS[sex_view]}",
+        title=f"Actual vs predicted net migration in {pred_year}",
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
         xaxis_title="",
         yaxis_title="Net migration",
@@ -476,21 +418,11 @@ elif page == "Machine Learning":
         "This changes one variable while the others stay at typical values. "
     )
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        pd_var = st.selectbox(
-            "Select a variable to explore",
-            ["salary", "unemployment", "house_price", "crime"],
-            format_func=lambda x: VARIABLE_NAMES[x],
-        )
-    with col_b:
-        selected_sex = st.radio(
-            "Choose sex for the example",
-            ["female", "male"],
-            format_func=lambda x: SEX_LABELS[x],
-            horizontal=True,
-        )
-
+    pd_var = st.selectbox(
+        "Select a variable to explore",
+        ["salary", "unemployment", "house_price", "crime"],
+        format_func=lambda x: VARIABLE_NAMES[x],
+    )
 
     typical_profile = pd.DataFrame({
         "year": [pred_year],
@@ -498,7 +430,6 @@ elif page == "Machine Learning":
         "unemployment": [ml_data["unemployment"].median()],
         "house_price": [ml_data["house_price"].median()],
         "crime": [ml_data["crime"].median()],
-        "is_male": [1 if selected_sex == "male" else 0],
     })
 
     x_range = np.linspace(ml_data[pd_var].min(), ml_data[pd_var].max(), 60)
@@ -579,7 +510,6 @@ elif page == "Migration Flows":
             showlegend=False,
         ))
 
-    # Small markers keep the map clean. Region names appear on hover, not as permanent labels.
     region_totals = pd.concat([
         top_flows[["origin_region_name", "migration_flow"]].rename(columns={"origin_region_name": "region"}),
         top_flows[["destination_region_name", "migration_flow"]].rename(columns={"destination_region_name": "region"}),
@@ -647,47 +577,4 @@ elif page == "Migration Flows":
     top_destination = origin_flows.iloc[0]
     st.success(
         f"In {year_flow}, the main destination from {selected_origin} was "
-        f"{top_destination['destination_region_name']} ({top_destination['migration_flow']:,.0f} people)."
-    )
-
-    st.subheader("Routes with the strongest sex difference")
-    st.write(
-        "This looks at whether each route is used more by women or men."
-    )
-    st.info(
-        "The value is women minus men. Values below 0 mean more men than women moved on that route. "
-        "Values above 0 mean more women than men moved on that route."
-    )
-
-    route_sex = df[
-        (df["year"] == year_flow) &
-        (df["origin_region_name"] != df["destination_region_name"])
-    ].copy()
-    route_sex = route_sex.groupby(["origin_region_name", "destination_region_name", "sex"], as_index=False)["migration_flow"].sum()
-    route_sex = route_sex.pivot_table(
-        index=["origin_region_name", "destination_region_name"],
-        columns="sex",
-        values="migration_flow",
-        fill_value=0,
-    ).reset_index()
-    route_sex["total"] = route_sex["female"] + route_sex["male"]
-    route_sex["female_share"] = route_sex["female"] / route_sex["total"]
-    route_sex["sex_gap"] = route_sex["female"] - route_sex["male"]
-    route_sex["route"] = route_sex["origin_region_name"] + " → " + route_sex["destination_region_name"]
-
-    route_sex["abs_gap"] = route_sex["sex_gap"].abs()
-    top_sex_gap = route_sex.sort_values("abs_gap", ascending=False).head(10).sort_values("sex_gap")
-
-    fig_gap = px.bar(
-        top_sex_gap,
-        x="sex_gap",
-        y="route",
-        orientation="h",
-        text="sex_gap",
-        labels={"sex_gap": "Women minus men", "route": ""},
-        title="Routes with the largest difference between women and men",
-    )
-    fig_gap.add_vline(x=0, line_dash="dash", line_color="gray")
-    fig_gap.update_traces(texttemplate="%{text:,.0f}", textposition="outside")
-    fig_gap.update_layout(height=480)
-    st.plotly_chart(fig_gap, use_container_width=True)
+        f"{top_destination['destination_region_name']} ({top_destination['migration_flow']:,.0f} people).")
